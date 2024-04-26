@@ -32,7 +32,24 @@ class TrackerHTTPServer(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             response = {"message": "Update successful"}
-            self.wfile.write(json.dumps(response).encode('utf-8'))
+            self.wfile.write(json.dumps(response).encode())
+            print(self.registry)
+        elif self.path == '/peer-update-download':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode())
+            
+            peer_id = data['peer_id']
+            file_name = data['file_name']
+            pieces_indices = data['pieces_indices']
+            for index in pieces_indices:
+                if peer_id not in self.registry[file_name]["piece_indices"][index]:
+                    self.registry[file_name]["piece_indices"][index].append(peer_id)
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            response = {"message": "Update successful"}
+            self.wfile.write(json.dumps(response).encode())
             print(self.registry)
 
     def do_GET(self):
