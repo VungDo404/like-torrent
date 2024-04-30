@@ -128,7 +128,7 @@ class File:
 
 
 class Peer(threading.Thread):
-    def __init__(self, port= 5000):
+    def __init__(self, port= 5003):
         super().__init__()
         self.host_name = socket.gethostname()
         self.peer_ip = socket.gethostbyname(self.host_name)

@@ -1,100 +1,84 @@
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
-from urllib.parse import urlparse, parse_qs
+import socket
+import threading
+
+class Server(threading.Thread): 
+    def __init__(self, port = 6000):
+        super().__init__()
+        self.host_name = socket.gethostname()
+        self.ip = socket.gethostbyname(self.host_name)
+        self.port = port
+        self.peers = []
+        self.torrent_tracker = {}
+        self.max_peers = 10
+        self.running = True
+    def handle_client(self, server_socket):
+        try:
+            while self.running:
+                client_socket, addr = server_socket.accept()
+                if not self.running: 
+                    break
+                print(f"Sever {self.ip}:{self.port} connected to {addr}")
+                while True:
+                    data = client_socket.recv(1024).decode()
+                    if not data:
+                        break
+                    parts = data.split()
+                    cmd = parts.pop()
+                    if cmd == 'add':
+                        info = parts.pop()
+                        ip,port = info.split('-')
+                        file = ' '.join(parts)
+                        self.torrent_tracker[file] = (ip, port)
+                        print(self.torrent_tracker)
+                        print(f"Added {file} with {ip}:{port} to torrent tracker")
+                        client_socket.sendall("Added".encode())
+                    if cmd == 'get':
+                        file = ' '.join(parts)
+                        if file in self.torrent_tracker:
+                            ip, port = self.torrent_tracker[file]
+                            client_socket.sendall(f"{ip} {port}".encode())
+                        else:
+                            client_socket.sendall("File not found".encode())
+        finally:
+            print(f"Closing server socket on {self.ip}")
+            server_socket.close()
+    def run(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((self.ip, self.port))
+        server_socket.listen(self.max_peers)
+        print(f"Server is listening on {self.ip}:{self.port}")
+        thread1 = threading.Thread(target=self.handle_client, args=(server_socket,))
+        thread1.start()
+        thread1.join()
+    def stop(self):
+        self.running = False
+        temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        temp_socket.connect((self.ip, self.port))
+        temp_socket.close()
 
 
-class TrackerHTTPServer(BaseHTTPRequestHandler):
-    registry = {}
-
-    def do_POST(self):
-        if self.path == '/peer-update':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode())
-
-            file_name = data['file_name']
-            peer_id = data['peer_id']
-            pieces_indices = data['pieces_indices']
-            file_details = data.get('file_details', None)
-            if file_name not in self.registry:
-                self.registry[file_name] = {
-                    "piece_indices": {},
-                    "files_nested": []
-                }
-            for index in pieces_indices:
-                if index not in self.registry[file_name]["piece_indices"]:
-                    self.registry[file_name]["piece_indices"][index] = []
-                if peer_id not in self.registry[file_name]["piece_indices"][index]:
-                    self.registry[file_name]["piece_indices"][index].append(peer_id)
-            if file_details:
-                self.registry[file_name]['files_nested'] = file_details
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            response = {"message": "Update successful"}
-            self.wfile.write(json.dumps(response).encode())
-            print(self.registry)
-        elif self.path == '/peer-update-download':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode())
-            
-            peer_id = data['peer_id']
-            file_name = data['file_name']
-            pieces_indices = data['pieces_indices']
-            for index in pieces_indices:
-                if peer_id not in self.registry[file_name]["piece_indices"][index]:
-                    self.registry[file_name]["piece_indices"][index].append(peer_id)
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            response = {"message": "Update successful"}
-            self.wfile.write(json.dumps(response).encode())
-            print(self.registry)
-
-    def do_GET(self):
-        if self.path == '/show':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            temp = []
-            for key in self.registry.keys():
-                if(len(self.registry[key]['files_nested'])):
-                    for each in self.registry[key]['files_nested']:
-                        temp.append(each['name'])
-                temp.append(key)
-            self.wfile.write(json.dumps({'files':  temp}, indent=4).encode('utf-8'))
-        elif self.path.startswith('/get-peer'): 
-            query_components = parse_qs(urlparse(self.path).query)
-            piece_indices = query_components.get('piece_indices', [''])[0]
-            filename = query_components.get('filename', [''])[0]
-            print('INDEX: ', piece_indices)
-            print('NAME: ', filename)
-            try:
-                piece_indices = [int(index) for index in piece_indices.split(',')]
-            except ValueError:
-                self.send_error(400, "Invalid piece indices")
-                return
-            response_data = self.find_peers_by_piece_indices(filename, piece_indices)
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(response_data).encode('utf-8'))
-        else:
-            self.send_error(404, "File Not Found")
-
-    def find_peers_by_piece_indices(self, filename, piece_indices):
-        file_data = self.registry.get(filename, {})
-        pieces_info = file_data.get('piece_indices', {})
-        result = {index: pieces_info.get(index, []) for index in piece_indices}
-        return result
+    def command_line(self):
+        while True:
+            command = input("Enter a command: ")
+            if command == "exit":
+                break
+            elif command == "peers":
+                print(self.peers)
+            else:
+                print("Invalid command")
 
 
-def run(server_class=HTTPServer, handler_class=TrackerHTTPServer, port=8000):
-    server_address = ('', port)
-    httpd = server_class(server_address, handler_class)
-    print(f"Starting httpd server on port {port}")
-    httpd.serve_forever()
-
+def main():
+    server = Server()
+    server.start()
+    while True:
+        cmd = input("> ").upper()
+        if cmd == "DOWNLOAD":
+            pass
+        elif cmd == "STOP":
+            break
+    server.stop()
+    server.join()
+    
 if __name__ == "__main__":
-    run()
+    main()
