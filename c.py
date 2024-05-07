@@ -8,9 +8,10 @@ import math
 import json
 import pprint
 import random
+from contextlib import suppress
 
 
-TRACKER_URL = 'http://192.168.0.104:8000' 
+TRACKER_URL = 'http://192.168.100.6:8000' 
 class File: 
     def __init__(self, path: str, ip):
         self.piece_size = 102400
@@ -61,7 +62,6 @@ class File:
                             'end_piece': end_piece_index,
                             'start_offset': current_offset ,
                             'end_offset': (current_offset + file_size - 1)
-                            
                         })
                         current_offset += file_size
                         self.show_progress(name, current_offset, total_size)
@@ -137,24 +137,24 @@ class Peer(threading.Thread):
         self.running = True
         self.OUTPUT_PATH = os.path.join(os.getcwd(), 'output')
         self.files = []
-        self.SERVER_IP = '192.168.0.104'
-        self.SERVER_PORT = 6000
+        self.SERVER_IP = '192.168.100.6' # CHANGE THIS TO YOUR SERVER IP
+        self.SERVER_PORT = 6000 # THIS SHOULD MATCH THE PORT IN s.py
         self.handle_file = File('', self.peer_ip)
-        self.torrents = []
+
     def run(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((self.peer_ip, self.port))
         self.server_socket.listen(10)
-        print(f"Peer {self.peer_ip}:{self.port} listening on port {self.port}")
+        print(f"\033[33mPeer {self.peer_ip}:{self.port} listening on port {self.port}\033[0m")
         try:
             while self.running:
                 client_socket, addr = self.server_socket.accept()
                 if not self.running: 
                     break
-                print(f"Peer {self.peer_ip}:{self.port} connected to {addr}")
+                print(f"\033[96mPeer {self.peer_ip}:{self.port} connected to {addr}\033[0m")
                 threading.Thread(target=self.handle_client, args=(client_socket,)).start()
         finally:
-            print(f"Closing server socket for peer {self.peer_ip}")
+            print(f"\033[33mPeer {self.peer_ip} listening on port {self.port}\033[0m")
             self.server_socket.close()
 
     def update_tracker_upload(self, torrent_data):
@@ -216,7 +216,7 @@ class Peer(threading.Thread):
             response = requests.get(url)
             response.raise_for_status()
             peer_data = response.json()
-            print("Received peer-set:", peer_data)
+            print(f"\033[34mReceived peer-set: \033[0m{peer_data}\033[0m")
             return peer_data
         except requests.RequestException as e:
             print(f"Failed to get peer data: {e}")
@@ -234,53 +234,75 @@ class Peer(threading.Thread):
                 if(cmd == 'download'):
                     first_part = file.split('/')[0]
                     torrent_data = self.get_torrent(first_part)
-                    print("TORRENT DATA: ", torrent_data)
                     requested_pieces = self.calculate_piece_indices_for_file(torrent_data, file)
                     peer_set = self.get_peers_for_pieces(torrent_data['announce'], first_part, requested_pieces)
-                    print("PEER SET: ", peer_set)
                     info = {first_part: {}}
+                    is_success = True
                     for piece_index, peer_ips in peer_set.items():
-                        piece_byte = self.request_piece_from_peer(piece_index, peer_ips, first_part)
-                        info[first_part][piece_index] = piece_byte
-                    self.files.append(info)
-                    data_update = {
-                        "file_name": first_part,
-                        "pieces_indices": requested_pieces
-                    }
-                    self.update_tracker_download(data_update)
-                    self.reconstruct_file(file, torrent_data)
-                    client_socket.sendall(response.encode())
-                    print(f"Peer {self.peer_ip}:{self.port} has downloaded: {file}")
+                        result = self.request_piece_from_peer(piece_index, peer_ips, first_part)
+                        if('is_success' in result and result['is_success']):
+                            temp_byte = result['piece'] if 'piece' in result else bytearray()
+                            if(temp_byte):
+                                info[first_part][piece_index] = temp_byte
+                            else:   
+                                print(f"\033[31mFailed to download piece {piece_index}, there seems to be an issue with the peer.\033[0m")
+                                is_success = False
+                                break
+                        else:
+                            print(f"\033[31mFailed to download piece {piece_index}, there seems to be an issue with the peer.\033[0m")
+                            is_success = False
+                            break
+                    if is_success:
+                        temp = dict(sorted(info[first_part].items()))
+                        temp_hash = ''
+                        for index in temp:
+                            temp_hash += self.handle_file.calculate_sha1(temp[index])
+                        print(f"\033[34mDownloaded pieces hash: \033[0m{temp_hash}")
+                        if temp_hash == torrent_data['info']['pieces']:
+                            print("\033[34mDownloaded pieces match the hash in the torrent file.\033[0m")
+                            self.files.append(info)
+                            data_update = {
+                                "file_name": first_part,
+                                "pieces_indices": requested_pieces
+                            }
+                            self.update_tracker_download(data_update)
+                            self.reconstruct_file(file, torrent_data)
+                            client_socket.sendall(response.encode())
+                            print(f"\033[34mPeer {self.peer_ip}:{self.port} has downloaded: {file}\033[0m")
+                        else:
+                            print("\033[31mDownloaded pieces do not match the hash in the torrent file.\033[0m")
+
+                            response = 'Response Failed'
+                            client_socket.sendall(response.encode())
+                    else:
+                        response = 'Response Failed'
+                        client_socket.sendall(response.encode())
                 elif(cmd == 'upload'):
                     self.handle_file.path = file
                     res = self.handle_file.divide_file_into_pieces()
                     self.files.append({res['name']: {str(i): value for i, value in enumerate(res['pieces'])}})
                     torrent_data = self.handle_file.create_torrent_file(res)
-                    self.torrents.append(torrent_data)
                     self.update_tracker_upload(torrent_data)
-                    self.update_torrent_server(f'{res['name']} {self.peer_ip}-{self.port} add')
+                    json_str = json.dumps(torrent_data)
+                    self.update_torrent_server(f"{json_str} add")
                     client_socket.sendall(response.encode())
-                    print(f"Peer {self.peer_ip}:{self.port} has uploaded: {file}")
-                elif(cmd == 'torrent'):
-                    response = next((item for item in self.torrents if item['info']['name'] == file), None)
-                    response = json.dumps(response)
-                    client_socket.sendall(response.encode())
-                    # print(f"Peer {self.peer_ip}:{self.port} has sent torrent file: {file}")
+                    print(f"\033[34mPeer {self.peer_ip}:{self.port} has uploaded: {file}\033[0m")
                 elif(cmd == 'block'):
                     index, offset = parts[0].split('-')
                     parts = file.split(' ', 1)  
                     filename = parts[1]
+                    response = bytearray()
                     for each in self.files:
-                        if filename in each:
+                        if filename in each and index in each[filename]:
                             piece = each[filename].get(index)
                             piece_length = len(piece)
                             offset = int(offset)
-                            if(offset >= piece_length):
-                                response = b'finish'
-                            else: 
+                            if(offset < piece_length):
                                 end = min(offset + self.handle_file.block_size, piece_length)
                                 response = piece[offset:end]
                             break
+                        else:
+                            raise ValueError(f"Piece {index} not found for file {filename}")
                     client_socket.sendall(response)
                 elif(cmd == 'length'):
                     filename, index = file.rsplit(' ', 1)
@@ -300,56 +322,85 @@ class Peer(threading.Thread):
         temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         temp_socket.connect((self.peer_ip, self.port))
         temp_socket.close()
+
     def get_torrent(self, file):
         peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         peer_socket.connect((self.SERVER_IP, self.SERVER_PORT))
         peer_socket.sendall(f"{file} get".encode())
         response = peer_socket.recv(1024).decode() 
-        target_ip, target_port = response.split()
-        peer_socket.close()
-        
-        peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        peer_socket.connect((target_ip, int(target_port)))
-        peer_socket.sendall(f"{file} torrent".encode())
-        response = peer_socket.recv(1024).decode() 
         peer_socket.close()
         
         torrent = json.loads(response)
-        print(f'Peer {self.peer_ip}:{self.port} has received torrent file:')
+        print(f"\033[34mPeer {self.peer_ip}:{self.port} has received torrent file:\033[0m")
         pprint.pprint(torrent)
         return torrent
 
-    def request_block_from_peer(self, piece_index, block_offset, peer_ips, file, index, blocks):
-        peer_ip, peer_port = random.choice(peer_ips)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((peer_ip, peer_port))
-        sock.sendall(f"{piece_index}-{block_offset} {file} block".encode())
-        response = sock.recv(self.handle_file.block_size)
-        sock.close()
-        blocks[index] = response
-    
+    def request_block_from_peer(self, piece_index, block_offset, peer_ips, file, index, blocks, info):
+        temp = peer_ips
+        
+        while True:
+            value = random.choice(temp)
+            try: 
+                peer_ip, peer_port = value
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((peer_ip, peer_port))
+                sock.sendall(f"{piece_index}-{block_offset} {file} block".encode())
+                response = sock.recv(self.handle_file.block_size)
+                sock.close()
+                blocks[index] = response
+                break
+            except: 
+                with suppress(ValueError):
+                    temp.remove(value)
+                if len(temp) == 0:
+                    info['is_success'] = False
+                    break
+
     def request_piece_from_peer(self, piece_index, peer_ips, file):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((peer_ips[0][0], peer_ips[0][1]))
-        sock.sendall(f"{file} {piece_index} length".encode())
-        piece_size = sock.recv(1024)
-        sock.close()
+        piece_size = 0
+        temp = peer_ips
+        while True:
+            value = random.choice(temp)
+            try: 
+                peer_ip, peer_port = value
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((peer_ip, peer_port))
+                sock.sendall(f"{file} {piece_index} length".encode())
+                piece_size = sock.recv(1024)
+                sock.close()
+                if(piece_size):
+                    break
+                else: 
+                    with suppress(ValueError):
+                        temp.remove(value)
+                    if len(temp) == 0:
+                        return {'is_success': False}
+            except: 
+                with suppress(ValueError):
+                    temp.remove(value)
+                if len(temp) == 0:
+                    return {'is_success': False}
         piece = bytearray()
         blocks = {}
         block_offset = 0
-        num = int(piece_size.decode()) // self.handle_file.block_size + 1
+        info = {'is_success': True}
+        num = math.ceil(int(piece_size.decode()) / self.handle_file.block_size)
         pool = []
         for index in range(num):
             block_offset = index * self.handle_file.block_size
-            thread = threading.Thread(target=self.request_block_from_peer, args=(piece_index, block_offset, peer_ips, file, index, blocks))
+            thread = threading.Thread(target=self.request_block_from_peer, args=(piece_index, block_offset, peer_ips, file, index, blocks, info))
             thread.start()
             pool.append(thread)
+
         for thread in pool:
             thread.join()
+
         blocks = dict(sorted(blocks.items()))
         for index in blocks:
             piece.extend(blocks[index])
-        return piece
+        info['piece'] = piece
+        return info
+
     def reconstruct_file(self, target_filename, torrent_data):
         root = target_filename.split('/')[0]
         
@@ -366,7 +417,7 @@ class Peer(threading.Thread):
                     output_path = os.path.join(self.OUTPUT_PATH, root)
                     with open(output_path, 'wb') as file:
                         file.write(complete_file_data)
-                    print(f"File successfully reconstructed and saved to {output_path}")
+                    print(f"\033[34mFile successfully reconstructed and saved to \033[0m{output_path}\033[0m")
                 else: 
                     name = torrent_data['info']['name']
                     files = torrent_data['info']['files']
@@ -381,7 +432,7 @@ class Peer(threading.Thread):
                                 start = file_info['mapping']['start_offset']
                                 end = file_info['mapping']['end_offset']
                                 file.write(complete_file_data[start:end])
-                            print(f"File successfully reconstructed and saved to {output_path}")
+                            print(f"\033[34mFile successfully reconstructed and saved to \033[0m{output_path}\033[0m")
                             return
                     if target_filename == name:
                         for file_info in files:
@@ -393,11 +444,11 @@ class Peer(threading.Thread):
                                 start = file_info['mapping']['start_offset']
                                 end = file_info['mapping']['end_offset']
                                 file.write(complete_file_data[start:end])
-                        print(f"File successfully reconstructed and saved to {target_filename}")
+                        print(f"\033[34mFile successfully reconstructed and saved to \033[0m{target_filename}\033[0m")
                             
                 return
         print(f"File {target_filename} not found in the provided data.")
-    
+
     def update_torrent_server(self, data):
         peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         peer_socket.connect((self.SERVER_IP, self.SERVER_PORT))

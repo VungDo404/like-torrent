@@ -1,7 +1,7 @@
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 from urllib.parse import urlparse, parse_qs
-
+import socket
 
 class TrackerHTTPServer(BaseHTTPRequestHandler):
     registry = {}
@@ -93,8 +93,9 @@ class TrackerHTTPServer(BaseHTTPRequestHandler):
 
 
 def run(server_class=HTTPServer, handler_class=TrackerHTTPServer, port=8000):
-    
-    server_address = ('192.168.0.104', port)
+    host_name = socket.gethostname()
+    ip = socket.gethostbyname(host_name)
+    server_address = (ip, port)
     httpd = server_class(server_address, handler_class)
     print(f"Starting httpd server on port {port}")
     httpd.serve_forever()

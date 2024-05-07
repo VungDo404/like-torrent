@@ -1,5 +1,6 @@
 import socket
 import threading
+import json
 
 class Server(threading.Thread): 
     def __init__(self, port = 6000):
@@ -11,6 +12,7 @@ class Server(threading.Thread):
         self.torrent_tracker = {}
         self.max_peers = 10
         self.running = True
+        self.torrents = []
     def handle_client(self, server_socket):
         try:
             while self.running:
@@ -25,18 +27,18 @@ class Server(threading.Thread):
                     parts = data.split()
                     cmd = parts.pop()
                     if cmd == 'add':
-                        info = parts.pop()
-                        ip,port = info.split('-')
-                        file = ' '.join(parts)
-                        self.torrent_tracker[file] = (ip, port)
-                        print(self.torrent_tracker)
-                        print(f"Added {file} with {ip}:{port} to torrent tracker")
+                        last_closing_brace_index = data.rfind('}')
+                        json_str = data[:last_closing_brace_index + 1]
+                        json_obj = json.loads(json_str)
+                        self.torrents.append(json_obj)
+                        print(self.torrents)
                         client_socket.sendall("Added".encode())
                     if cmd == 'get':
                         file = ' '.join(parts)
-                        if file in self.torrent_tracker:
-                            ip, port = self.torrent_tracker[file]
-                            client_socket.sendall(f"{ip} {port}".encode())
+                        for torrent in self.torrents:
+                            if torrent['info']['name'] == file:
+                                client_socket.sendall(json.dumps(torrent).encode())
+                                break
                         else:
                             client_socket.sendall("File not found".encode())
         finally:
@@ -55,17 +57,6 @@ class Server(threading.Thread):
         temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         temp_socket.connect((self.ip, self.port))
         temp_socket.close()
-
-
-    def command_line(self):
-        while True:
-            command = input("Enter a command: ")
-            if command == "exit":
-                break
-            elif command == "peers":
-                print(self.peers)
-            else:
-                print("Invalid command")
 
 
 def main():
