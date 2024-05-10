@@ -237,22 +237,15 @@ class Peer(threading.Thread):
                     requested_pieces = self.calculate_piece_indices_for_file(torrent_data, file)
                     peer_set = self.get_peers_for_pieces(torrent_data['announce'], first_part, requested_pieces)
                     info = {first_part: {}}
-                    is_success = True
+                    is_success = [True]
+                    threads = []
                     for piece_index, peer_ips in peer_set.items():
-                        result = self.request_piece_from_peer(piece_index, peer_ips, first_part)
-                        if('is_success' in result and result['is_success']):
-                            temp_byte = result['piece'] if 'piece' in result else bytearray()
-                            if(temp_byte):
-                                info[first_part][piece_index] = temp_byte
-                            else:   
-                                print(f"\033[31mFailed to download piece {piece_index}, there seems to be an issue with the peer.\033[0m")
-                                is_success = False
-                                break
-                        else:
-                            print(f"\033[31mFailed to download piece {piece_index}, there seems to be an issue with the peer.\033[0m")
-                            is_success = False
-                            break
-                    if is_success:
+                        thread = threading.Thread(target= self.request_piece_from_peer, args=(piece_index, peer_ips, first_part, info, is_success) )
+                        thread.start()
+                        threads.append(thread)
+                    for thread in threads:
+                        thread.join()
+                    if is_success[0]:
                         temp = dict(sorted(info[first_part].items()))
                         temp_hash = ''
                         for index in temp:
@@ -276,11 +269,16 @@ class Peer(threading.Thread):
                             client_socket.sendall(response.encode())
                     else:
                         response = 'Response Failed'
+                        print(f"\033[31mFailed to download pieces, there seems to be an issue with the peer.\033[0m")
                         client_socket.sendall(response.encode())
                 elif(cmd == 'upload'):
                     self.handle_file.path = file
                     res = self.handle_file.divide_file_into_pieces()
                     self.files.append({res['name']: {str(i): value for i, value in enumerate(res['pieces'])}})
+                    for each in self.files:
+                        for key,value in each.items():
+                            for k,v in value.items():
+                                print(f"\033[34mPiece {k} of file {key} has length: {len(v)}\033[0m")
                     torrent_data = self.handle_file.create_torrent_file(res)
                     self.update_tracker_upload(torrent_data)
                     json_str = json.dumps(torrent_data)
@@ -293,16 +291,17 @@ class Peer(threading.Thread):
                     filename = parts[1]
                     response = bytearray()
                     for each in self.files:
-                        if filename in each and index in each[filename]:
-                            piece = each[filename].get(index)
-                            piece_length = len(piece)
-                            offset = int(offset)
-                            if(offset < piece_length):
-                                end = min(offset + self.handle_file.block_size, piece_length)
-                                response = piece[offset:end]
-                            break
-                        else:
-                            raise ValueError(f"Piece {index} not found for file {filename}")
+                        if filename in each:
+                            if index in each[filename]:
+                                piece = each[filename].get(index)
+                                piece_length = len(piece)
+                                offset = int(offset)
+                                if(offset < piece_length):
+                                    end = min(offset + self.handle_file.block_size, piece_length)
+                                    response = piece[offset:end]
+                                break
+                            else:
+                                raise ValueError(f"Piece {index} not found for file {filename}")
                     client_socket.sendall(response)
                 elif(cmd == 'length'):
                     filename, index = file.rsplit(' ', 1)
@@ -356,7 +355,7 @@ class Peer(threading.Thread):
                     info['is_success'] = False
                     break
 
-    def request_piece_from_peer(self, piece_index, peer_ips, file):
+    def request_piece_from_peer(self, piece_index, peer_ips, file, piece_info, is_success):
         piece_size = 0
         temp = peer_ips
         while True:
@@ -399,7 +398,8 @@ class Peer(threading.Thread):
         for index in blocks:
             piece.extend(blocks[index])
         info['piece'] = piece
-        return info
+        is_success[0] = info['is_success']
+        piece_info[file][piece_index] = piece
 
     def reconstruct_file(self, target_filename, torrent_data):
         root = target_filename.split('/')[0]
